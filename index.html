@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Exam Preparation Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">◎</div>
+      <div>
+        <div class="title">Exam Preparation Dashboard</div>
+        <div class="subtitle">Interactive timetable + notes + progress (25 Nov–9 Dec)</div>
+      </div>
+    </div>
+
+    <div class="top-actions">
+      <div class="card mini" role="status" aria-live="polite">
+        <div class="mini-label">Exam countdown</div>
+        <div id="countdown" class="mini-value">—</div>
+      </div>
+
+      <button id="btnExport" class="btn secondary" type="button">Export backup</button>
+      <label class="btn secondary" role="button">
+        Import backup
+        <input id="fileImport" type="file" accept="application/json" hidden />
+      </label>
+      <button id="btnReset" class="btn danger" type="button">Reset data</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="grid stats">
+      <div class="card">
+        <h2>Overall progress</h2>
+        <div class="progress-row">
+          <div class="progress-bar">
+            <div id="overallBar" class="progress-fill" style="width:0%"></div>
+          </div>
+          <div class="progress-text" id="overallText">0/0</div>
+        </div>
+        <div class="muted" id="overallMeta">—</div>
+      </div>
+
+      <div class="card">
+        <h2>By subject</h2>
+        <div class="subject-list" id="subjectList"></div>
+      </div>
+
+      <div class="card">
+        <h2>Today</h2>
+        <div class="today-box">
+          <div class="today-date" id="todayDate">—</div>
+          <div class="today-progress" id="todayProgress">—</div>
+          <div class="muted small">
+            Your timetable ends at <b>16:00</b>. I’ve left the remaining <b>30 minutes</b> as a buffer area (not a tracked session).
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <aside class="card side">
+        <h2>Navigation</h2>
+        <div class="muted small">Jump to a day, then mark sessions + write notes.</div>
+        <div id="dayNav" class="day-nav"></div>
+        <div class="hr"></div>
+        <h2>Project tracker</h2>
+        <div class="project-card">
+          <div class="project-title">19:00–20:00 (every evening)</div>
+          <div class="muted small">Tracked checkbox for each date.</div>
+          <div id="projectSummary" class="project-summary">—</div>
+        </div>
+      </aside>
+
+      <section class="card main">
+        <div class="main-header">
+          <h2>Daily schedule</h2>
+          <div class="muted small">Each session is a checkbox. Progress updates instantly.</div>
+        </div>
+        <div id="dayContainer" class="day-container"></div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="muted small">
+      Data is saved locally in your browser (<b>persistent storage</b>) via localStorage.
+      For multi-device sync, use Export/Import.
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
