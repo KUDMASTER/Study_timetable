@@ -1,4 +1,4 @@
-// Exam Preparation Dashboard - standalone (localStorage persistence)
+// Exam Preparation Dashboard - standalone (localStorage persistence + session timers & Web Audio alarm)
 
 const SUBJECTS = [
   { key: "AI", label: "AI" },
@@ -7,7 +7,7 @@ const SUBJECTS = [
   { key: "Mixed", label: "Mixed" },
 ];
 
-// Timetable sessions through 16:00 (as provided). Buffer 16:00–16:30 is NOT tracked.
+// Timetable sessions through 16:00. Buffer 16:00–16:30 is NOT tracked.
 const timetable = [
   { date: "2025-11-25", day: "Tue", sessions: [
       { time: "09:00–10:30", subject: "AI" },
@@ -107,9 +107,6 @@ const timetable = [
       { time: "14:30–16:00", subject: "Mixed" },
     ]
   },
-  // Exam day: per your note, “only 30–45 min quick recall… No new material.”
-  // We'll still show sessions, but you can treat them as checklist placeholders.
-  // If you want, tell me and I’ll customize exam day to a single "Quick recall" card.
   { date: "2025-12-09", day: "Tue", sessions: [
       { time: "09:00–10:30", subject: "AI" },
       { time: "10:40–12:10", subject: "InfoSec" },
@@ -119,13 +116,11 @@ const timetable = [
   },
 ];
 
-// Project tracker is every evening 19:00–20:00
 const PROJECT_TIME = "19:00–20:00";
-
 const STORAGE_KEY = "exam_dashboard_v1";
+const EXAM_DATE_ISO = "2025-12-09";
 
 function isoDate(d){
-  // d is Date
   const y = d.getFullYear();
   const m = String(d.getMonth()+1).padStart(2,"0");
   const day = String(d.getDate()).padStart(2,"0");
@@ -133,7 +128,6 @@ function isoDate(d){
 }
 
 function parseISO(iso){
-  // treat as local date at 00:00
   const [y,m,day] = iso.split("-").map(Number);
   return new Date(y, m-1, day);
 }
@@ -157,7 +151,6 @@ function saveState(){
 
 let state = loadState();
 
-// Build helpers
 function sessionId(date, time, subject){
   return `${date}__${time}__${subject}`;
 }
@@ -166,10 +159,332 @@ function getTodayISO(){
   return isoDate(new Date());
 }
 
+// Parse time range "09:00–10:30" into start/end minutes from midnight & duration in seconds
+function parseTimeRange(rangeStr){
+  const parts = rangeStr.split(/[–-]/);
+  const [sh, sm] = parts[0].split(":").map(Number);
+  const [eh, em] = parts[1].split(":").map(Number);
+  const startMins = sh * 60 + sm;
+  const endMins = eh * 60 + em;
+  return {
+    startMins,
+    endMins,
+    durationSec: Math.max(60, (endMins - startMins) * 60)
+  };
+}
+
+function formatTimerClock(totalSec){
+  const s = Math.max(0, Math.floor(totalSec));
+  const hrs = Math.floor(s / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const secs = s % 60;
+  if(hrs > 0){
+    return `${String(hrs).padStart(2,"0")}:${String(mins).padStart(2,"0")}:${String(secs).padStart(2,"0")}`;
+  }
+  return `${String(mins).padStart(2,"0")}:${String(secs).padStart(2,"0")}`;
+}
+
+// --- Web Audio API Synthesized Alarm ---
+let audioCtx = null;
+let alarmLoopInterval = null;
+
+function playAlarmChime(){
+  try {
+    if(!audioCtx){
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if(audioCtx.state === "suspended"){
+      audioCtx.resume();
+    }
+    const now = audioCtx.currentTime;
+    const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+    notes.forEach((freq, idx) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, now + idx * 0.14);
+
+      gain.gain.setValueAtTime(0.001, now + idx * 0.14);
+      gain.gain.exponentialRampToValueAtTime(0.28, now + idx * 0.14 + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.14 + 0.45);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start(now + idx * 0.14);
+      osc.stop(now + idx * 0.14 + 0.5);
+    });
+  } catch (e) {
+    console.warn("Audio playback blocked or unsupported:", e);
+  }
+}
+
+function startAlarm(){
+  stopAlarm();
+  playAlarmChime();
+  alarmLoopInterval = setInterval(playAlarmChime, 2200);
+  document.getElementById("timerCard").classList.add("alarming");
+  document.getElementById("btnStopAlarm").classList.remove("hidden");
+}
+
+function stopAlarm(){
+  if(alarmLoopInterval){
+    clearInterval(alarmLoopInterval);
+    alarmLoopInterval = null;
+  }
+  document.getElementById("timerCard").classList.remove("alarming");
+  document.getElementById("btnStopAlarm").classList.add("hidden");
+}
+
+// --- Timer State & Logic ---
+const timer = {
+  id: null,          // sessionId or `${date}__PROJECT`
+  type: null,        // "session" | "project"
+  date: null,
+  time: null,
+  subject: null,
+  totalSec: 0,
+  remainingSec: 0,
+  running: false,
+  endTimestamp: null,
+  intervalHandle: null,
+  autoStartedIds: new Set()
+};
+
+function selectSessionForTimer(date, time, subject, type = "session", autoStart = true, customRemainingSec = null){
+  stopAlarm();
+  if(timer.intervalHandle){
+    clearInterval(timer.intervalHandle);
+    timer.intervalHandle = null;
+  }
+
+  const parsed = parseTimeRange(time);
+  const id = type === "project" ? `${date}__PROJECT` : sessionId(date, time, subject);
+
+  timer.id = id;
+  timer.type = type;
+  timer.date = date;
+  timer.time = time;
+  timer.subject = subject;
+  timer.totalSec = parsed.durationSec;
+  timer.remainingSec = customRemainingSec !== null ? customRemainingSec : parsed.durationSec;
+  timer.running = false;
+  timer.endTimestamp = null;
+
+  if(autoStart){
+    resumeTimer();
+  } else {
+    updateTimerUI();
+    renderDays();
+  }
+}
+
+function resumeTimer(){
+  if(!timer.id || timer.running) return;
+  if(timer.remainingSec <= 0){
+    timer.remainingSec = timer.totalSec;
+  }
+  // Initialize AudioContext on user gesture so alarm works reliably later
+  if(!audioCtx){
+    try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch {}
+  }
+  timer.running = true;
+  timer.endTimestamp = Date.now() + timer.remainingSec * 1000;
+  timer.intervalHandle = setInterval(tickTimer, 250);
+  updateTimerUI();
+  renderDays();
+}
+
+function pauseTimer(){
+  if(!timer.running) return;
+  timer.remainingSec = Math.max(0, Math.ceil((timer.endTimestamp - Date.now()) / 1000));
+  timer.running = false;
+  timer.endTimestamp = null;
+  if(timer.intervalHandle){
+    clearInterval(timer.intervalHandle);
+    timer.intervalHandle = null;
+  }
+  updateTimerUI();
+  renderDays();
+}
+
+function resetTimer(){
+  stopAlarm();
+  if(timer.intervalHandle){
+    clearInterval(timer.intervalHandle);
+    timer.intervalHandle = null;
+  }
+  timer.running = false;
+  timer.endTimestamp = null;
+  timer.remainingSec = timer.totalSec;
+  updateTimerUI();
+  renderDays();
+}
+
+function addFiveMinutes(){
+  if(!timer.id) return;
+  timer.totalSec += 300;
+  timer.remainingSec += 300;
+  if(timer.running && timer.endTimestamp){
+    timer.endTimestamp += 300 * 1000;
+  }
+  updateTimerUI();
+}
+
+function tickTimer(){
+  if(!timer.running) return;
+  const rem = Math.ceil((timer.endTimestamp - Date.now()) / 1000);
+  if(rem <= 0){
+    timer.remainingSec = 0;
+    completeActiveSession(true);
+  } else {
+    timer.remainingSec = rem;
+    updateTimerUI();
+  }
+}
+
+function completeActiveSession(triggerAlarmSound = true){
+  if(timer.intervalHandle){
+    clearInterval(timer.intervalHandle);
+    timer.intervalHandle = null;
+  }
+  timer.running = false;
+  timer.endTimestamp = null;
+  timer.remainingSec = 0;
+
+  // Mark session or project complete in persistent state
+  if(timer.id){
+    if(timer.type === "project"){
+      state.project[timer.id] = true;
+    } else {
+      state.sessions[timer.id] = true;
+    }
+    saveState();
+  }
+
+  updateTimerUI(true);
+  refreshUI();
+
+  if(triggerAlarmSound){
+    startAlarm();
+  }
+}
+
+function updateTimerUI(justFinished = false){
+  const card = document.getElementById("timerCard");
+  const badge = document.getElementById("timerStatusBadge");
+  const label = document.getElementById("timerSessionLabel");
+  const sub = document.getElementById("timerSessionSub");
+  const clock = document.getElementById("timerDisplay");
+  const fill = document.getElementById("timerProgressFill");
+
+  const btnToggle = document.getElementById("btnTimerToggle");
+  const btnAdd5 = document.getElementById("btnTimerAdd5");
+  const btnReset = document.getElementById("btnTimerReset");
+  const btnComplete = document.getElementById("btnTimerComplete");
+
+  if(!timer.id){
+    card.classList.remove("running");
+    badge.className = "status-pill idle";
+    badge.textContent = "IDLE";
+    label.textContent = "No active study session selected";
+    sub.innerHTML = "Click <b>Start Timer</b> on any scheduled session below, or enable auto-schedule sync.";
+    clock.textContent = "00:00";
+    fill.style.width = "0%";
+    document.title = "Exam Preparation Dashboard";
+
+    btnToggle.disabled = true;
+    btnToggle.textContent = "Start";
+    btnAdd5.disabled = true;
+    btnReset.disabled = true;
+    btnComplete.disabled = true;
+    return;
+  }
+
+  btnToggle.disabled = false;
+  btnAdd5.disabled = false;
+  btnReset.disabled = false;
+  btnComplete.disabled = false;
+
+  const formatted = formatTimerClock(timer.remainingSec);
+  clock.textContent = formatted;
+  const elapsedPct = timer.totalSec > 0 ? Math.min(100, Math.max(0, ((timer.totalSec - timer.remainingSec) / timer.totalSec) * 100)) : 0;
+  fill.style.width = `${elapsedPct}%`;
+
+  const titleText = timer.type === "project" ? "Evening Project Block" : `${timer.subject} Study Session`;
+  label.textContent = `${titleText} (${timer.time})`;
+  sub.textContent = `Date: ${timer.date} · Total duration: ${Math.round(timer.totalSec / 60)} mins`;
+
+  if(justFinished || timer.remainingSec === 0){
+    card.classList.remove("running");
+    badge.className = "status-pill done";
+    badge.textContent = "SESSION ENDED";
+    btnToggle.textContent = "Restart";
+    document.title = `⏰ Done! - ${titleText}`;
+  } else if(timer.running){
+    card.classList.add("running");
+    badge.className = "status-pill running";
+    badge.textContent = "IN PROGRESS";
+    btnToggle.textContent = "Pause";
+    document.title = `(${formatted}) ${titleText}`;
+  } else {
+    card.classList.remove("running");
+    badge.className = "status-pill paused";
+    badge.textContent = "PAUSED";
+    btnToggle.textContent = "Resume";
+    document.title = `[Paused] ${titleText}`;
+  }
+}
+
+// Auto-detect current scheduled block based on system clock
+function checkAutoScheduleSync(){
+  const autoSync = document.getElementById("chkAutoSync")?.checked;
+  if(!autoSync) return;
+
+  const now = new Date();
+  const todayISO = isoDate(now);
+  const dayObj = timetable.find(d => d.date === todayISO);
+  if(!dayObj) return;
+
+  const nowMins = now.getHours() * 60 + now.getMinutes();
+  const nowSecOfDay = nowMins * 60 + now.getSeconds();
+
+  // Check regular study sessions
+  for(const sess of dayObj.sessions){
+    const sid = sessionId(dayObj.date, sess.time, sess.subject);
+    if(state.sessions[sid]) continue; // already done
+
+    const { startMins, endMins } = parseTimeRange(sess.time);
+    if(nowMins >= startMins && nowMins < endMins){
+      if(!timer.running && timer.id !== sid && !timer.autoStartedIds.has(sid)){
+        timer.autoStartedIds.add(sid);
+        const remSec = Math.max(60, endMins * 60 - nowSecOfDay);
+        selectSessionForTimer(dayObj.date, sess.time, sess.subject, "session", true, remSec);
+      }
+      return;
+    }
+  }
+
+  // Check evening project block (19:00–20:00)
+  const pid = `${dayObj.date}__PROJECT`;
+  if(!state.project[pid]){
+    const { startMins, endMins } = parseTimeRange(PROJECT_TIME);
+    if(nowMins >= startMins && nowMins < endMins){
+      if(!timer.running && timer.id !== pid && !timer.autoStartedIds.has(pid)){
+        timer.autoStartedIds.add(pid);
+        const remSec = Math.max(60, endMins * 60 - nowSecOfDay);
+        selectSessionForTimer(dayObj.date, PROJECT_TIME, "Evening Project", "project", true, remSec);
+      }
+    }
+  }
+}
+
+setInterval(checkAutoScheduleSync, 5000);
+
+// --- Countdown & Dashboard Rendering ---
 function formatCountdown(targetISO){
   const now = new Date();
   const target = parseISO(targetISO);
-  // countdown to end of exam day (23:59:59)
   target.setHours(23,59,59,999);
   const diff = target - now;
   if(diff <= 0) return "Exam day: 0d 0h 0m";
@@ -179,8 +494,6 @@ function formatCountdown(targetISO){
   const m = mins%60;
   return `${d}d ${h}h ${m}m`;
 }
-
-const EXAM_DATE_ISO = "2025-12-09";
 
 function renderSubjectProgress(){
   const subjectList = document.getElementById("subjectList");
@@ -210,7 +523,6 @@ function renderSubjectProgress(){
 }
 
 function computeTotals(){
-  // overall = all sessions + project checkboxes
   let overallAll = 0, overallDone = 0;
 
   const bySubject = {};
@@ -230,12 +542,10 @@ function computeTotals(){
       }
     }
 
-    // project tracker
     overallAll++;
     const pid = `${day.date}__PROJECT`;
     const pChecked = !!state.project[pid];
     if(pChecked) overallDone++;
-    // project doesn't belong to subject; we keep it only for overall progress
   }
 
   const todayISO = getTodayISO();
@@ -310,7 +620,6 @@ function renderDays(){
   container.innerHTML = "";
 
   for(const day of timetable){
-    // nav button
     const b = document.createElement("button");
     b.type = "button";
     b.dataset.target = `day_${day.date}`;
@@ -321,7 +630,6 @@ function renderDays(){
     });
     nav.appendChild(b);
 
-    // day block
     const dayEl = document.createElement("div");
     dayEl.className = "day";
     dayEl.id = `day_${day.date}`;
@@ -334,6 +642,7 @@ function renderDays(){
     const dayAll = day.sessions.length;
     const pid = `${day.date}__PROJECT`;
     const projectDone = !!state.project[pid];
+    const isProjectActive = timer.id === pid;
 
     dayEl.innerHTML = `
       <div class="day-header">
@@ -351,13 +660,22 @@ function renderDays(){
         ${day.sessions.map((sess) => {
           const sid = sessionId(day.date, sess.time, sess.subject);
           const checked = !!state.sessions[sid];
+          const isActive = timer.id === sid;
+          const durMins = Math.round(parseTimeRange(sess.time).durationSec / 60);
           return `
-            <div class="session">
+            <div class="session ${isActive ? "active-timer" : ""}">
               <input type="checkbox" id="chk_${sid}" ${checked ? "checked" : ""} />
               <div class="session-meta">
                 <div class="session-time">${sess.time}</div>
-                <div class="session-subject">${sess.subject}</div>
+                <div class="session-subject">${sess.subject} · ${durMins} min</div>
               </div>
+              <button type="button" class="btn ${isActive ? "success" : "secondary"} xs btn-start-session"
+                data-date="${day.date}"
+                data-time="${sess.time}"
+                data-subject="${sess.subject}"
+                data-type="session">
+                ${isActive ? (timer.running ? "Running…" : "Selected") : "Start Timer"}
+              </button>
             </div>
           `;
         }).join("")}
@@ -369,17 +687,24 @@ function renderDays(){
       </div>
 
       <div style="margin-top:12px;">
-        <div class="session" style="background: rgba(124,92,255,.08);">
+        <div class="session ${isProjectActive ? "active-timer" : ""}" style="background: rgba(124,92,255,.08);">
           <input type="checkbox" id="proj_${day.date}" ${projectDone ? "checked" : ""} />
           <div class="session-meta">
             <div class="session-time">Project tracker: ${PROJECT_TIME}</div>
-            <div class="session-subject">Evening work block</div>
+            <div class="session-subject">Evening work block · 60 min</div>
           </div>
+          <button type="button" class="btn ${isProjectActive ? "success" : "secondary"} xs btn-start-session"
+            data-date="${day.date}"
+            data-time="${PROJECT_TIME}"
+            data-subject="Evening Project"
+            data-type="project">
+            ${isProjectActive ? (timer.running ? "Running…" : "Selected") : "Start Timer"}
+          </button>
         </div>
       </div>
     `;
 
-    // attach checkbox listeners
+    // Checkbox listeners
     dayEl.querySelectorAll('input[type="checkbox"]').forEach((input) => {
       input.addEventListener("change", (e) => {
         const id = e.target.id;
@@ -395,7 +720,16 @@ function renderDays(){
       });
     });
 
-    // notes listener
+    // Start Timer button listeners
+    dayEl.querySelectorAll(".btn-start-session").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const { date, time, subject, type } = btn.dataset;
+        selectSessionForTimer(date, time, subject, type, true);
+        document.getElementById("timerCard").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    });
+
+    // Notes listener
     const ta = dayEl.querySelector(`#note_${day.date}`);
     ta.addEventListener("input", (e) => {
       state.notes[day.date] = e.target.value;
@@ -419,9 +753,40 @@ function refreshUI(){
   renderOverall();
   renderSubjectProgress();
   renderToday();
-  renderDays(); // rerender to update counts
+  renderDays();
   renderProjectSummary();
 }
+
+// Timer Control Event Listeners
+document.getElementById("btnTimerToggle").addEventListener("click", () => {
+  stopAlarm();
+  if(timer.running){
+    pauseTimer();
+  } else {
+    resumeTimer();
+  }
+});
+
+document.getElementById("btnTimerAdd5").addEventListener("click", () => {
+  stopAlarm();
+  addFiveMinutes();
+});
+
+document.getElementById("btnTimerReset").addEventListener("click", () => {
+  resetTimer();
+});
+
+document.getElementById("btnTimerComplete").addEventListener("click", () => {
+  completeActiveSession(true);
+});
+
+document.getElementById("btnStopAlarm").addEventListener("click", () => {
+  stopAlarm();
+});
+
+document.getElementById("btnTestAlarm").addEventListener("click", () => {
+  playAlarmChime();
+});
 
 // Export/Import/Reset
 function getAllBackup(){
@@ -483,7 +848,6 @@ setInterval(renderCountdown, 30000);
 renderCountdown();
 
 function init(){
-  // Ensure timetable range notes keys exist (optional)
   for(const day of timetable){
     if(!(day.date in state.notes)) state.notes[day.date] = state.notes[day.date] || "";
   }
@@ -494,6 +858,8 @@ function init(){
   renderToday();
   renderDays();
   renderProjectSummary();
+  updateTimerUI();
+  checkAutoScheduleSync();
 }
 
 init();
