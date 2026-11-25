@@ -12,7 +12,7 @@
       <div class="logo" aria-hidden="true">◎</div>
       <div>
         <div class="title">Exam Preparation Dashboard</div>
-        <div class="subtitle">Interactive timetable + notes + progress (25 Nov–9 Dec)</div>
+        <div class="subtitle">Interactive timetable + study timers + notes + progress (25 Nov–9 Dec)</div>
       </div>
     </div>
 
@@ -22,6 +22,7 @@
         <div id="countdown" class="mini-value">—</div>
       </div>
 
+      <button id="btnTestAlarm" class="btn secondary" type="button" title="Preview end-of-session alarm">Test Alarm</button>
       <button id="btnExport" class="btn secondary" type="button">Export backup</button>
       <label class="btn secondary" role="button">
         Import backup
@@ -32,6 +33,38 @@
   </header>
 
   <main class="container">
+    <!-- Active Study Session Timer Bar -->
+    <section id="timerCard" class="card timer-banner" aria-live="polite">
+      <div class="timer-left">
+        <div class="timer-badge-row">
+          <span id="timerStatusBadge" class="status-pill idle">IDLE</span>
+          <span id="timerSessionLabel" class="timer-session-title">No active study session selected</span>
+        </div>
+        <div id="timerSessionSub" class="muted small">
+          Click <b>Start Timer</b> on any scheduled session below, or enable auto-schedule sync.
+        </div>
+        <label class="auto-sync-label">
+          <input type="checkbox" id="chkAutoSync" checked />
+          <span>Auto-detect &amp; sync with real-time clock schedule</span>
+        </label>
+      </div>
+
+      <div class="timer-center">
+        <div id="timerDisplay" class="timer-clock">00:00</div>
+        <div class="timer-progress-track">
+          <div id="timerProgressFill" class="timer-progress-fill" style="width:0%"></div>
+        </div>
+      </div>
+
+      <div class="timer-controls">
+        <button id="btnTimerToggle" class="btn primary" type="button" disabled>Start</button>
+        <button id="btnTimerAdd5" class="btn secondary" type="button" disabled>+5m</button>
+        <button id="btnTimerReset" class="btn secondary" type="button" disabled>Reset</button>
+        <button id="btnTimerComplete" class="btn success" type="button" disabled>Finish Now</button>
+        <button id="btnStopAlarm" class="btn alarm-btn hidden" type="button">Stop Alarm</button>
+      </div>
+    </section>
+
     <section class="grid stats">
       <div class="card">
         <h2>Overall progress</h2>
@@ -54,23 +87,23 @@
         <div class="today-box">
           <div class="today-date" id="todayDate">—</div>
           <div class="today-progress" id="todayProgress">—</div>
-          <div class="muted small">
+          <div class="muted small" style="margin-top:8px;">
             Your timetable ends at <b>16:00</b>. I’ve left the remaining <b>30 minutes</b> as a buffer area (not a tracked session).
           </div>
         </div>
       </div>
     </section>
 
-    <section class="grid">
+    <section class="grid main-layout">
       <aside class="card side">
         <h2>Navigation</h2>
-        <div class="muted small">Jump to a day, then mark sessions + write notes.</div>
+        <div class="muted small" style="margin-bottom:10px;">Jump to a day, then mark sessions + write notes.</div>
         <div id="dayNav" class="day-nav"></div>
         <div class="hr"></div>
         <h2>Project tracker</h2>
         <div class="project-card">
           <div class="project-title">19:00–20:00 (every evening)</div>
-          <div class="muted small">Tracked checkbox for each date.</div>
+          <div class="muted small">Tracked checkbox &amp; timer for each date.</div>
           <div id="projectSummary" class="project-summary">—</div>
         </div>
       </aside>
@@ -78,7 +111,7 @@
       <section class="card main">
         <div class="main-header">
           <h2>Daily schedule</h2>
-          <div class="muted small">Each session is a checkbox. Progress updates instantly.</div>
+          <div class="muted small">Use the timer to run a session—completing a timer automatically checks off the session and triggers an alarm.</div>
         </div>
         <div id="dayContainer" class="day-container"></div>
       </section>
